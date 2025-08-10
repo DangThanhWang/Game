@@ -18,12 +18,10 @@ namespace Game.Services
             public bool autoExpand = true;
         }
 
-        [Header("Pool Configuration")]
         [SerializeField] private PoolConfig[] poolConfigs;
-
         private Dictionary<string, ObjectPool> pools = new Dictionary<string, ObjectPool>();
 
-        void Awake()
+        private void Awake()
         {
             if (Instance == null)
             {
@@ -31,238 +29,112 @@ namespace Game.Services
                 DontDestroyOnLoad(gameObject);
                 InitializePools();
             }
-            else
-            {
-                Destroy(gameObject);
-            }
+            else Destroy(gameObject);
         }
 
-        void InitializePools()
+        private void InitializePools()
         {
-            foreach (var config in poolConfigs)
+            foreach (var cfg in poolConfigs)
             {
-                CreatePool(config.poolName, config.prefab, config.initialSize, config.maxSize, config.autoExpand);
+                CreatePool(cfg.poolName, cfg.prefab, cfg.initialSize, cfg.maxSize, cfg.autoExpand);
             }
         }
 
-        public void CreatePool(string poolName, GameObject prefab, int initialSize = 10, int maxSize = 50, bool autoExpand = true)
+        public void CreatePool(string poolName, GameObject prefab, int initialSize, int maxSize, bool autoExpand)
         {
-            if (pools.ContainsKey(poolName))
-            {
-                Debug.LogWarning($"Pool '{poolName}' already exists!");
-                return;
-            }
-
-            GameObject poolContainer = new GameObject($"Pool_{poolName}");
-            poolContainer.transform.SetParent(transform);
-
-            ObjectPool pool = new ObjectPool(poolName, prefab, poolContainer.transform, initialSize, maxSize, autoExpand);
-            pools[poolName] = pool;
-
-            Debug.Log($"Created pool '{poolName}' with {initialSize} initial objects");
+            if (pools.ContainsKey(poolName)) return;
+            GameObject container = new GameObject($"Pool_{poolName}");
+            container.transform.SetParent(transform);
+            pools[poolName] = new ObjectPool(poolName, prefab, container.transform, initialSize, maxSize, autoExpand);
         }
 
-        public GameObject Spawn(string poolName, Vector3 position = default, Quaternion rotation = default, Transform parent = null)
+        public GameObject Spawn(string poolName, Vector3 position, Quaternion rotation = default, Transform parent = null)
         {
             if (!pools.ContainsKey(poolName))
             {
-                Debug.LogError($"Pool '{poolName}' not found!");
+                Debug.LogError($"Pool {poolName} not found!");
                 return null;
             }
-
             return pools[poolName].Get(position, rotation, parent);
         }
 
         public void Despawn(string poolName, GameObject obj)
         {
-            if (!pools.ContainsKey(poolName))
-            {
-                Debug.LogError($"Pool '{poolName}' not found!");
-                return;
-            }
-
+            if (!pools.ContainsKey(poolName)) return;
             pools[poolName].Return(obj);
         }
 
         public void DespawnAfterDelay(string poolName, GameObject obj, float delay)
         {
-            StartCoroutine(DespawnDelayedCoroutine(poolName, obj, delay));
+            StartCoroutine(DespawnRoutine(poolName, obj, delay));
         }
 
-        private IEnumerator DespawnDelayedCoroutine(string poolName, GameObject obj, float delay)
+        private IEnumerator DespawnRoutine(string poolName, GameObject obj, float delay)
         {
             yield return new WaitForSeconds(delay);
-            if (obj != null && obj.activeInHierarchy)
-            {
-                Despawn(poolName, obj);
-            }
-        }
-
-        public void ClearPool(string poolName)
-        {
-            if (pools.ContainsKey(poolName))
-            {
-                pools[poolName].Clear();
-            }
-        }
-
-        public void ClearAllPools()
-        {
-            foreach (var pool in pools.Values)
-            {
-                pool.Clear();
-            }
-        }
-
-        // Get pool stats for debugging
-        public string GetPoolStats(string poolName)
-        {
-            if (pools.ContainsKey(poolName))
-            {
-                return pools[poolName].GetStats();
-            }
-            return $"Pool '{poolName}' not found";
+            if (obj != null && obj.activeInHierarchy) Despawn(poolName, obj);
         }
     }
 
     public class ObjectPool
     {
-        private string poolName;
-        private GameObject prefab;
-        private Transform container;
-        private Queue<GameObject> availableObjects;
-        private HashSet<GameObject> allObjects;
-        private int maxSize;
-        private bool autoExpand;
+        private readonly string poolName;
+        private readonly GameObject prefab;
+        private readonly Transform container;
+        private readonly Queue<GameObject> available = new();
+        private readonly HashSet<GameObject> all = new();
+        private readonly int maxSize;
+        private readonly bool autoExpand;
 
         public ObjectPool(string name, GameObject prefab, Transform container, int initialSize, int maxSize, bool autoExpand)
         {
-            this.poolName = name;
+            poolName = name;
             this.prefab = prefab;
             this.container = container;
             this.maxSize = maxSize;
             this.autoExpand = autoExpand;
 
-            availableObjects = new Queue<GameObject>();
-            allObjects = new HashSet<GameObject>();
-
-            // Pre-populate pool
-            for (int i = 0; i < initialSize; i++)
-            {
-                CreateNewObject();
-            }
+            for (int i = 0; i < initialSize; i++) CreateNew();
         }
 
-        private GameObject CreateNewObject()
+        private GameObject CreateNew()
         {
-            if (allObjects.Count >= maxSize && !autoExpand)
-            {
-                return null;
-            }
-
-            GameObject newObj = Object.Instantiate(prefab, container);
-            newObj.SetActive(false);
-            
-            // Add IPoolable component handling if needed
-            IPoolable poolable = newObj.GetComponent<IPoolable>();
-            if (poolable != null)
-            {
-                poolable.OnCreated();
-            }
-
-            allObjects.Add(newObj);
-            availableObjects.Enqueue(newObj);
-            
-            return newObj;
+            if (all.Count >= maxSize && !autoExpand) return null;
+            GameObject obj = Object.Instantiate(prefab, container);
+            obj.SetActive(false);
+            obj.GetComponent<IPoolable>()?.OnCreated();
+            all.Add(obj);
+            available.Enqueue(obj);
+            return obj;
         }
 
-        public GameObject Get(Vector3 position = default, Quaternion rotation = default, Transform parent = null)
+        public GameObject Get(Vector3 position, Quaternion rotation, Transform parent)
         {
-            GameObject obj = null;
+            GameObject obj = available.Count > 0 ? available.Dequeue() : CreateNew();
+            if (obj == null) return null;
 
-            if (availableObjects.Count > 0)
-            {
-                obj = availableObjects.Dequeue();
-            }
-            else if (autoExpand || allObjects.Count < maxSize)
-            {
-                obj = CreateNewObject();
-            }
-
-            if (obj != null)
-            {
-                obj.transform.position = position;
-                obj.transform.rotation = rotation;
-                
-                if (parent != null)
-                    obj.transform.SetParent(parent);
-                else
-                    obj.transform.SetParent(container);
-
-                obj.SetActive(true);
-
-                // Handle IPoolable
-                IPoolable poolable = obj.GetComponent<IPoolable>();
-                if (poolable != null)
-                {
-                    poolable.OnSpawned();
-                }
-            }
-
+            obj.transform.position = position;
+            obj.transform.rotation = rotation;
+            obj.transform.SetParent(parent ?? container);
+            obj.SetActive(true);
+            obj.GetComponent<IPoolable>()?.OnSpawned();
             return obj;
         }
 
         public void Return(GameObject obj)
         {
-            if (obj == null || !allObjects.Contains(obj))
-                return;
-
-            // Handle IPoolable
-            IPoolable poolable = obj.GetComponent<IPoolable>();
-            if (poolable != null)
-            {
-                poolable.OnDespawned();
-            }
-
+            if (!all.Contains(obj)) return;
+            obj.GetComponent<IPoolable>()?.OnDespawned();
             obj.SetActive(false);
             obj.transform.SetParent(container);
-            availableObjects.Enqueue(obj);
-        }
-
-        public void Clear()
-        {
-            while (availableObjects.Count > 0)
-            {
-                GameObject obj = availableObjects.Dequeue();
-                if (obj != null)
-                {
-                    Object.Destroy(obj);
-                }
-            }
-
-            foreach (GameObject obj in allObjects)
-            {
-                if (obj != null)
-                {
-                    Object.Destroy(obj);
-                }
-            }
-
-            availableObjects.Clear();
-            allObjects.Clear();
-        }
-
-        public string GetStats()
-        {
-            return $"{poolName}: {availableObjects.Count}/{allObjects.Count} available (Max: {maxSize})";
+            available.Enqueue(obj);
         }
     }
 
-    // Optional interface for pooled objects
     public interface IPoolable
     {
-        void OnCreated();   // Called once when object is first created
-        void OnSpawned();   // Called every time object is taken from pool
-        void OnDespawned(); // Called every time object is returned to pool
+        void OnCreated();
+        void OnSpawned();
+        void OnDespawned();
     }
 }
