@@ -1,0 +1,327 @@
+// WeaponController.cs - Main Controller
+using UnityEngine;
+using Game.Scriptable;
+
+namespace Game.Controllers
+{
+    public class WeaponController : MonoBehaviour
+    {
+        [SerializeField] public Transform firePoint;
+        [SerializeField] public WeaponData weaponData;
+
+        // Components
+        private WeaponFiring weaponFiring;
+        private WeaponStats weaponStats;
+        private WeaponPooling weaponPooling;
+        private WeaponPowerUps weaponPowerUps;
+
+        private void Awake()
+        {
+            Initialize();
+        }
+
+        private void Initialize()
+        {
+            // Get components
+            weaponFiring = GetComponent<WeaponFiring>();
+            weaponStats = GetComponent<WeaponStats>();
+            weaponPooling = GetComponent<WeaponPooling>();
+            weaponPowerUps = GetComponent<WeaponPowerUps>();
+
+            // Initialize components
+            weaponPooling.Initialize(this);
+            weaponStats.Initialize(this);
+            weaponFiring.Initialize(this);
+            weaponPowerUps.Initialize(this);
+        }
+
+        private void Update()
+        {
+            weaponFiring.Update();
+        }
+
+        private void OnDestroy()
+        {
+            weaponPooling.OnDestroy();
+            weaponPowerUps.OnDestroy();
+        }
+
+        // Public properties for components to access
+        public WeaponFiring Firing => weaponFiring;
+        public WeaponStats Stats => weaponStats;
+        public WeaponPooling Pooling => weaponPooling;
+        public WeaponPowerUps PowerUps => weaponPowerUps;
+    }
+}
+
+// WeaponFiring.cs - Handles firing logic
+using System.Collections;
+using UnityEngine;
+
+namespace Game.Controllers
+{
+    public class WeaponFiring : MonoBehaviour
+    {
+        private WeaponController controller;
+        private float lastFireTime;
+
+        public void Initialize(WeaponController controller)
+        {
+            this.controller = controller;
+            lastFireTime = 0f;
+        }
+
+        public void Update()
+        {
+            if (Time.time - lastFireTime >= controller.Stats.CurrentFireRate)
+            {
+                FireMissile();
+                lastFireTime = Time.time;
+            }
+        }
+
+        private void FireMissile()
+        {
+            Transform firePoint = controller.firePoint;
+            if (firePoint == null) firePoint = controller.transform;
+
+            if (controller.Stats.CurrentBurst)
+            {
+                StartCoroutine(FireBurstMissiles());
+            }
+            else
+            {
+                FireSingleMissile(Vector2.up);
+            }
+
+            if (controller.Stats.CurrentDiagonalFire)
+            {
+                FireSingleMissile(new Vector2(1, 1));
+                FireSingleMissile(new Vector2(-1, 1));
+            }
+        }
+
+        private void FireSingleMissile(Vector2 direction)
+        {
+            Transform firePoint = controller.firePoint;
+            if (firePoint == null) firePoint = controller.transform;
+
+            for (int i = 0; i < controller.Stats.CurrentBulletCount; i++)
+            {
+                Vector3 spawnPos = firePoint.position;
+
+                if (controller.Stats.CurrentBulletCount > 1)
+                {
+                    float offset = (i - (controller.Stats.CurrentBulletCount - 1) * 0.5f) * 0.3f;
+                    spawnPos.x += offset;
+                }
+
+                controller.Pooling.SpawnMissile(i, spawnPos, direction);
+            }
+        }
+
+        private IEnumerator FireBurstMissiles()
+        {
+            FireSingleMissile(Vector2.up);
+            yield return new WaitForSeconds(controller.Stats.CurrentFireRate / 4f);
+            FireSingleMissile(Vector2.up);
+        }
+    }
+}
+
+// WeaponStats.cs - Manages weapon statistics (converted from static class)
+using UnityEngine;
+
+namespace Game.Controllers
+{
+    public class WeaponStats : MonoBehaviour
+    {
+        private WeaponController controller;
+
+        // Current stats (runtime values that can be modified by power-ups)
+        private float currentMissileSpeed;
+        private float currentFireRate;
+        private int currentBulletCount;
+        private float currentBulletScale;
+        private bool currentPierce;
+        private bool currentBurst;
+        private int currentDamage;
+        private bool currentHoming;
+        private bool currentDiagonalFire;
+        private bool currentBounceShot;
+
+        public void Initialize(WeaponController controller)
+        {
+            this.controller = controller;
+            ResetToDefaults();
+        }
+
+        public void ResetToDefaults()
+        {
+            if (controller.weaponData != null)
+            {
+                currentMissileSpeed = 6f; // Default missile speed
+                currentFireRate = controller.weaponData.fireRate;
+                currentBulletCount = controller.weaponData.bulletCount;
+                currentBulletScale = controller.weaponData.bulletScale;
+                currentPierce = controller.weaponData.pierce;
+                currentBurst = controller.weaponData.burst;
+                currentDamage = controller.weaponData.damage;
+                currentHoming = controller.weaponData.homing;
+                currentDiagonalFire = controller.weaponData.diagonalFire;
+                currentBounceShot = controller.weaponData.bounceShot;
+            }
+        }
+
+        // Public properties for accessing current stats
+        public float CurrentMissileSpeed { get => currentMissileSpeed; set => currentMissileSpeed = value; }
+        public float CurrentFireRate { get => currentFireRate; set => currentFireRate = value; }
+        public int CurrentBulletCount { get => currentBulletCount; set => currentBulletCount = value; }
+        public float CurrentBulletScale { get => currentBulletScale; set => currentBulletScale = value; }
+        public bool CurrentPierce { get => currentPierce; set => currentPierce = value; }
+        public bool CurrentBurst { get => currentBurst; set => currentBurst = value; }
+        public int CurrentDamage { get => currentDamage; set => currentDamage = value; }
+        public bool CurrentHoming { get => currentHoming; set => currentHoming = value; }
+        public bool CurrentDiagonalFire { get => currentDiagonalFire; set => currentDiagonalFire = value; }
+        public bool CurrentBounceShot { get => currentBounceShot; set => currentBounceShot = value; }
+    }
+}
+
+// WeaponPooling.cs - Handles object pooling
+using UnityEngine;
+using Game.Services;
+
+namespace Game.Controllers
+{
+    public class WeaponPooling : MonoBehaviour
+    {
+        private WeaponController controller;
+        private const string MISSILE_POOL = "Missiles";
+
+        public void Initialize(WeaponController controller)
+        {
+            this.controller = controller;
+            CreatePools();
+        }
+
+        private void CreatePools()
+        {
+            if (controller.weaponData == null)
+            {
+                Debug.LogError("WeaponData is not assigned in WeaponController.");
+                return;
+            }
+
+            if (PoolManager.Instance != null)
+            {
+                for (int i = 0; i < controller.weaponData.missilePrefabs.Length; i++)
+                {
+                    if (controller.weaponData.missilePrefabs[i] != null)
+                    {
+                        PoolManager.Instance.CreatePool(
+                            MISSILE_POOL + "_" + i,
+                            controller.weaponData.missilePrefabs[i],
+                            10,
+                            30,
+                            true
+                        );
+
+                        Debug.Log($"Created pool for {MISSILE_POOL}_{i} with prefab {controller.weaponData.missilePrefabs[i].name}");
+                    }
+                }
+            }
+        }
+
+        public void SpawnMissile(int missileIndex, Vector3 position, Vector2 direction)
+        {
+            string poolName = MISSILE_POOL + "_" + Mathf.Min(missileIndex, controller.weaponData.missilePrefabs.Length - 1);
+
+            GameObject missile = PoolManager.Instance.Spawn(poolName, position);
+            if (missile != null)
+            {
+                var missileController = missile.GetComponent<MissileController>();
+                missileController.Initialize(poolName);
+                missileController.SetVelocity(direction);
+            }
+        }
+
+        public void OnDestroy()
+        {
+            // Clean up pools if needed
+        }
+    }
+}
+
+// WeaponPowerUps.cs - Handles power-up application and management
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using Game.PowerUps;
+
+namespace Game.Controllers
+{
+    public class WeaponPowerUps : MonoBehaviour
+    {
+        private WeaponController controller;
+        private Dictionary<PowerUpType, Coroutine> activePowerUps;
+
+        public void Initialize(WeaponController controller)
+        {
+            this.controller = controller;
+            activePowerUps = new Dictionary<PowerUpType, Coroutine>();
+        }
+
+        public void ApplyPowerUp(IPowerUpWeapon powerUp, float duration)
+        {
+            // If this power-up is already active, stop the previous one
+            if (activePowerUps.ContainsKey(powerUp.Type))
+            {
+                if (activePowerUps[powerUp.Type] != null)
+                {
+                    StopCoroutine(activePowerUps[powerUp.Type]);
+                }
+            }
+
+            // Apply the power-up effect
+            powerUp.Apply(controller, duration);
+
+            // Start tracking this power-up
+            activePowerUps[powerUp.Type] = StartCoroutine(TrackPowerUpDuration(powerUp.Type, duration));
+        }
+
+        private IEnumerator TrackPowerUpDuration(PowerUpType type, float duration)
+        {
+            yield return new WaitForSeconds(duration);
+            
+            // Remove from active power-ups when it expires
+            if (activePowerUps.ContainsKey(type))
+            {
+                activePowerUps.Remove(type);
+            }
+        }
+
+        public bool IsActivePowerUp(PowerUpType type)
+        {
+            return activePowerUps.ContainsKey(type);
+        }
+
+        public void OnDestroy()
+        {
+            // Stop all active power-up coroutines
+            foreach (var powerUp in activePowerUps.Values)
+            {
+                if (powerUp != null)
+                {
+                    StopCoroutine(powerUp);
+                }
+            }
+            activePowerUps.Clear();
+        }
+
+        public IEnumerator ResetAfterDuration(float duration, System.Action resetAction)
+        {
+            yield return new WaitForSeconds(duration);
+            resetAction?.Invoke();
+        }
+    }
+}
