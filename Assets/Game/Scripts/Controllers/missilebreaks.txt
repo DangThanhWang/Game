@@ -1,0 +1,443 @@
+// ==================== MissileController.cs ====================
+using UnityEngine;
+using Game.Services;
+
+namespace Game.Controllers
+{
+    public class MissileController : MonoBehaviour, IPoolable 
+    {
+        [Header("Components")]
+        private MissileMovement movement;
+        private MissileCollision collision;
+        private MissileVisuals visuals;
+        private MissileBehavior behavior;
+        
+        [Header("References")]
+        private Rigidbody2D rb;
+        private Collider2D col;
+        private string poolName;
+        private bool isActive;
+
+        public bool IsActive => isActive;
+        public MissileMovement Movement => movement;
+        public MissileCollision Collision => collision;
+        public MissileVisuals Visuals => visuals;
+        public MissileBehavior Behavior => behavior;
+
+        private void Awake()
+        {
+            rb = GetComponent<Rigidbody2D>();
+            col = GetComponent<Collider2D>();
+            
+            // Initialize components
+            movement = GetComponent<MissileMovement>();
+            collision = GetComponent<MissileCollision>();
+            visuals = GetComponent<MissileVisuals>();
+            behavior = GetComponent<MissileBehavior>();
+            
+            gameObject.tag = "Missile";
+        }
+
+        public void Initialize(string poolName)
+        {
+            this.poolName = poolName;
+            
+            // Initialize all components
+            movement?.Initialize(this);
+            collision?.Initialize(this);
+            visuals?.Initialize(this);
+            behavior?.Initialize(this);
+        }
+
+        public void OnCreate()
+        {
+            rb.gravityScale = 0f;
+            rb.constraints = RigidbodyConstraints2D.FreezeRotation;
+            col.isTrigger = true;
+        }
+
+        public void OnSpawned()
+        {
+            isActive = true;
+            movement?.OnSpawned();
+            collision?.OnSpawned();
+            visuals?.OnSpawned();
+            behavior?.OnSpawned();
+        }
+
+        public void OnDespawned()
+        {
+            isActive = false;
+            rb.velocity = Vector2.zero;
+            movement?.OnDespawned();
+            collision?.OnDespawned();
+            visuals?.OnDespawned();
+            behavior?.OnDespawned();
+        }
+
+        public void DestroyMissile(MissileDestroyReason reason)
+        {
+            if (!isActive) return;
+            PoolManager.Instance.Despawn(poolName, gameObject);
+        }
+
+        private void Update()
+        {
+            if (!isActive) return;
+            
+            movement?.UpdateMovement();
+            behavior?.UpdateBehavior();
+        }
+    }
+}
+
+// ==================== MissileMovement.cs ====================
+using UnityEngine;
+
+namespace Game.Controllers
+{
+    public class MissileMovement : MonoBehaviour
+    {
+        private MissileController controller;
+        private Rigidbody2D rb;
+        
+        [Header("Movement Settings")]
+        private Vector2 currentVelocity;
+        private float rotationSpeed = 5f;
+
+        public Vector2 Velocity => currentVelocity;
+
+        public void Initialize(MissileController controller)
+        {
+            this.controller = controller;
+            rb = GetComponent<Rigidbody2D>();
+        }
+
+        public void OnSpawned()
+        {
+            // Reset movement state
+        }
+
+        public void OnDespawned()
+        {
+            rb.velocity = Vector2.zero;
+            currentVelocity = Vector2.zero;
+        }
+
+        public void UpdateMovement()
+        {
+            // Handle rotation based on velocity
+            if (currentVelocity != Vector2.zero)
+            {
+                float targetAngle = Mathf.Atan2(currentVelocity.y, currentVelocity.x) * Mathf.Rad2Deg - 90;
+                float currentAngle = rb.rotation;
+                float newAngle = Mathf.LerpAngle(currentAngle, targetAngle, Time.deltaTime * rotationSpeed);
+                rb.rotation = newAngle;
+            }
+        }
+
+        public void SetVelocity(Vector2 velocity)
+        {
+            currentVelocity = velocity * WeaponStats.missileSpeed;
+            rb.velocity = currentVelocity;
+
+            // Set initial rotation
+            if (velocity != Vector2.zero)
+            {
+                float angle = Mathf.Atan2(velocity.y, velocity.x) * Mathf.Rad2Deg - 90;
+                rb.rotation = angle;
+            }
+        }
+
+        public void SetHomingTarget(Transform target)
+        {
+            if (target != null)
+            {
+                Vector2 direction = (target.position - transform.position).normalized;
+                SetVelocity(direction);
+            }
+        }
+
+        public void Reflect(Vector2 normal)
+        {
+            Vector2 reflectedDirection = Vector2.Reflect(currentVelocity.normalized, normal);
+            SetVelocity(reflectedDirection);
+        }
+    }
+}
+
+// ==================== MissileCollision.cs ====================
+using UnityEngine;
+
+namespace Game.Controllers
+{
+    public class MissileCollision : MonoBehaviour
+    {
+        private MissileController controller;
+        
+        [Header("Collision Settings")]
+        private int bounceLeft = 0;
+        private bool canBounce = false;
+
+        public int BounceLeft => bounceLeft;
+        public bool CanBounce => canBounce;
+
+        public void Initialize(MissileController controller)
+        {
+            this.controller = controller;
+        }
+
+        public void OnSpawned()
+        {
+            bounceLeft = WeaponStats.bounceShot ? 3 : 0;
+            canBounce = WeaponStats.bounceShot;
+        }
+
+        public void OnDespawned()
+        {
+            bounceLeft = 0;
+            canBounce = false;
+        }
+
+        private void OnTriggerEnter2D(Collider2D other)
+        {
+            if (!controller.IsActive) return;
+
+            HandleCollision(other);
+        }
+
+        private void HandleCollision(Collider2D other)
+        {
+            if (other.CompareTag("Wall"))
+            {
+                HandleWallCollision(other);
+            }
+            else if (other.CompareTag("Ground") || other.CompareTag("UpBounce"))
+            {
+                HandleGroundCollision(other);
+            }
+            else if (other.CompareTag("Meteor"))
+            {
+                HandleMeteorCollision(other);
+            }
+        }
+
+        private void HandleWallCollision(Collider2D wall)
+        {
+            if (canBounce && bounceLeft > 0)
+            {
+                bounceLeft--;
+                controller.Movement.Reflect(wall.transform.right);
+            }
+            else
+            {
+                controller.DestroyMissile(MissileDestroyReason.OutOfBounds);
+            }
+        }
+
+        private void HandleGroundCollision(Collider2D ground)
+        {
+            if (canBounce && bounceLeft > 0)
+            {
+                bounceLeft--;
+                controller.Movement.Reflect(ground.transform.up);
+            }
+            else
+            {
+                controller.DestroyMissile(MissileDestroyReason.OutOfBounds);
+            }
+        }
+
+        private void HandleMeteorCollision(Collider2D meteor)
+        {
+            if (!WeaponStats.pierce)
+            {
+                controller.DestroyMissile(MissileDestroyReason.HitTarget);
+            }
+        }
+    }
+}
+
+// ==================== MissileVisuals.cs ====================
+using UnityEngine;
+using System.Collections;
+
+namespace Game.Controllers
+{
+    public class MissileVisuals : MonoBehaviour
+    {
+        private MissileController controller;
+        private SpriteRenderer spriteRenderer;
+        
+        [Header("Visual Effects")]
+        [SerializeField] private GameObject trailEffect;
+        [SerializeField] private GameObject hitEffect;
+        [SerializeField] private ParticleSystem particles;
+
+        public void Initialize(MissileController controller)
+        {
+            this.controller = controller;
+            spriteRenderer = GetComponent<SpriteRenderer>();
+        }
+
+        public void OnSpawned()
+        {
+            // Setup visual scale based on weapon stats
+            transform.localScale = Vector3.one * WeaponStats.bulletScale;
+            
+            // Enable trail effect if available
+            if (trailEffect != null)
+                trailEffect.SetActive(true);
+                
+            // Start particle effect if available
+            if (particles != null)
+                particles.Play();
+        }
+
+        public void OnDespawned()
+        {
+            // Disable trail effect
+            if (trailEffect != null)
+                trailEffect.SetActive(false);
+                
+            // Stop particle effect
+            if (particles != null)
+                particles.Stop();
+        }
+
+        public void PlayHitEffect()
+        {
+            if (hitEffect != null)
+            {
+                GameObject effect = Instantiate(hitEffect, transform.position, transform.rotation);
+                Destroy(effect, 2f);
+            }
+        }
+
+        public void SetColor(Color color)
+        {
+            if (spriteRenderer != null)
+                spriteRenderer.color = color;
+        }
+
+        public void SetAlpha(float alpha)
+        {
+            if (spriteRenderer != null)
+            {
+                Color color = spriteRenderer.color;
+                color.a = alpha;
+                spriteRenderer.color = color;
+            }
+        }
+
+        public void FlashEffect(Color flashColor, float duration)
+        {
+            StartCoroutine(FlashCoroutine(flashColor, duration));
+        }
+
+        private IEnumerator FlashCoroutine(Color flashColor, float duration)
+        {
+            Color originalColor = spriteRenderer.color;
+            spriteRenderer.color = flashColor;
+            
+            yield return new WaitForSeconds(duration);
+            
+            spriteRenderer.color = originalColor;
+        }
+    }
+}
+
+// ==================== MissileBehavior.cs ====================
+using UnityEngine;
+using Game.Utils;
+
+namespace Game.Controllers
+{
+    public class MissileBehavior : MonoBehaviour
+    {
+        private MissileController controller;
+        private Transform targetMeteor;
+        
+        [Header("Behavior Settings")]
+        private bool isHoming = false;
+        private float homingStrength = 1f;
+        
+        public Transform Target => targetMeteor;
+        public bool IsHoming => isHoming;
+
+        public void Initialize(MissileController controller)
+        {
+            this.controller = controller;
+        }
+
+        public void OnSpawned()
+        {
+            isHoming = WeaponStats.homing;
+            targetMeteor = null;
+        }
+
+        public void OnDespawned()
+        {
+            targetMeteor = null;
+            isHoming = false;
+        }
+
+        public void UpdateBehavior()
+        {
+            if (isHoming)
+            {
+                UpdateHomingBehavior();
+            }
+        }
+
+        private void UpdateHomingBehavior()
+        {
+            FindClosestMeteor();
+            
+            if (targetMeteor != null)
+            {
+                controller.Movement.SetHomingTarget(targetMeteor);
+            }
+        }
+
+        private void FindClosestMeteor()
+        {
+            float closestDistance = float.MaxValue;
+            targetMeteor = null;
+            
+            foreach (var meteor in ChaseableEntity.AllEntities)
+            {
+                if (meteor == null) continue;
+                
+                float distance = Vector2.Distance(transform.position, meteor.transform.position);
+                if (distance < closestDistance)
+                {
+                    closestDistance = distance;
+                    targetMeteor = meteor.transform;
+                }
+            }
+        }
+
+        public void SetHomingEnabled(bool enabled)
+        {
+            isHoming = enabled;
+        }
+
+        public void SetTarget(Transform target)
+        {
+            targetMeteor = target;
+        }
+    }
+}
+
+// ==================== MissileDestroyReason.cs ====================
+namespace Game.Controllers
+{
+    public enum MissileDestroyReason
+    {
+        OutOfBounds,
+        HitTarget,
+        TimeOut,
+        Manual
+    }
+}
