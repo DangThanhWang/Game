@@ -1,0 +1,267 @@
+// 1. MeteorSpawnerController.cs - Controller chính
+using System.Collections;
+using UnityEngine;
+using Game.Services;
+using Game.Core;
+using Game.Events;
+
+namespace Game.Controllers
+{
+    public class MeteorSpawnerController : MonoBehaviour
+    {
+        [SerializeField] private GameObject[] meteorPrefabs; // Large, Medium, Small
+        [SerializeField] private int meteorsCount = 12;
+        [SerializeField] private float spawnDelay = 4f;
+
+        public GameObject[] MeteorPrefabs => meteorPrefabs;
+        public int MeteorsCount => meteorsCount;
+        public float SpawnDelay => spawnDelay;
+
+        // Components
+        private MeteorSpawnerPooling spawnerPooling;
+        private MeteorSpawnerData spawnerData;
+        private MeteorSpawnerSpawning spawnerSpawning;
+        private MeteorSpawnerSplitting spawnerSplitting;
+
+        public static MeteorSpawnerController Instance { get; private set; }
+
+        private void Awake()
+        {
+            Instance = this;
+            Initialize();
+        }
+
+        private void Initialize()
+        {
+            spawnerPooling = GetComponent<MeteorSpawnerPooling>();
+            spawnerData = GetComponent<MeteorSpawnerData>();
+            spawnerSpawning = GetComponent<MeteorSpawnerSpawning>();
+            spawnerSplitting = GetComponent<MeteorSpawnerSplitting>();
+
+            spawnerPooling.Initialize(this);
+            spawnerData.Initialize(this);
+            spawnerSpawning.Initialize(this);
+            spawnerSplitting.Initialize(this);
+
+            EventManager.Subscribe<LevelStartEvent>(OnLevelStart);
+        }
+
+        private void Start()
+        {
+            spawnerPooling.CreatePools();
+        }
+
+        private void OnLevelStart(LevelStartEvent ev)
+        {
+            spawnerData.LoadMeteorData(ev.LevelData);
+            spawnerSpawning.StartSpawning();
+        }
+
+        private void OnDestroy()
+        {
+            EventManager.Unsubscribe<LevelStartEvent>(OnLevelStart);
+        }
+    }
+}
+
+// 2. MeteorSpawnerPooling.cs - Quản lý Pool
+using Game.Services;
+using UnityEngine;
+
+namespace Game.Controllers
+{
+    public class MeteorSpawnerPooling : MonoBehaviour
+    {
+        private MeteorSpawnerController controller;
+        private readonly string[] poolNames = { "LargeMeteor_Pool", "MediumMeteor_Pool", "SmallMeteor_Pool" };
+
+        public string[] PoolNames => poolNames;
+
+        public void Initialize(MeteorSpawnerController controller)
+        {
+            this.controller = controller;
+        }
+
+        public void CreatePools()
+        {
+            for (int i = 0; i < controller.MeteorPrefabs.Length; i++)
+            {
+                PoolManager.Instance.CreatePool(poolNames[i], controller.MeteorPrefabs[i], 10, 30, true);
+            }
+        }
+
+        public GameObject SpawnMeteor(int sizeIndex, Vector3 position)
+        {
+            return PoolManager.Instance.Spawn(poolNames[sizeIndex], position);
+        }
+    }
+}
+
+// 3. MeteorSpawnerData.cs - Quản lý dữ liệu
+using UnityEngine;
+
+namespace Game.Controllers
+{
+    public class MeteorSpawnerData : MonoBehaviour
+    {
+        private MeteorSpawnerController controller;
+        private TextAsset meteorsJson;
+        private MeteorSpawnList meteors;
+
+        public MeteorSpawnList Meteors => meteors;
+
+        public void Initialize(MeteorSpawnerController controller)
+        {
+            this.controller = controller;
+        }
+
+        public void LoadMeteorData(TextAsset levelData)
+        {
+            meteorsJson = levelData;
+            
+            if (meteorsJson == null)
+            {
+                Debug.Log("Meteor json is null");
+                return;
+            }
+            
+            meteors = JsonUtility.FromJson<MeteorSpawnList>(meteorsJson.text);
+            Debug.Log("Meteor data loaded successfully");
+        }
+    }
+}
+
+// 4. MeteorSpawnerSpawning.cs - Quản lý spawn logic
+using System.Collections;
+using UnityEngine;
+using Game.Events;
+using Game.Services;
+
+namespace Game.Controllers
+{
+    public class MeteorSpawnerSpawning : MonoBehaviour
+    {
+        private MeteorSpawnerController controller;
+        private MeteorSpawnerData spawnerData;
+        private MeteorSpawnerPooling spawnerPooling;
+        private readonly float[] directions = { -1f, 1f };
+
+        public void Initialize(MeteorSpawnerController controller)
+        {
+            this.controller = controller;
+            spawnerData = GetComponent<MeteorSpawnerData>();
+            spawnerPooling = GetComponent<MeteorSpawnerPooling>();
+        }
+
+        public void StartSpawning()
+        {
+            StartCoroutine(SpawnMeteorsFromJson());
+        }
+
+        private IEnumerator SpawnMeteorsFromJson()
+        {
+            if (spawnerData.Meteors == null) yield break;
+            
+            float startTime = Time.time;
+            int currentIndex = 0;
+            
+            while (currentIndex < spawnerData.Meteors.meteors.Length)
+            {
+                var meteorData = spawnerData.Meteors.meteors[currentIndex];
+                if (Time.time > startTime + meteorData.spawnTime)
+                {
+                    SpawnMeteorFromData(meteorData);
+                    currentIndex++;
+                }
+                yield return null;
+            }
+
+            EventManager.Trigger(new AllMeteorsDestroyedEvent(LevelManager.Instance.CurrentLevel));
+        }
+
+        private void SpawnMeteorFromData(MeteorData meteorData)
+        {
+            float direction = directions[Random.Range(0, 2)];
+            int sizeIndex = (int)meteorData.size;
+            Vector3 spawnPosition = (Vector3)meteorData.position;
+            
+            GameObject meteor = spawnerPooling.SpawnMeteor(sizeIndex, spawnPosition);
+
+            if (meteor != null)
+            {
+                var meteorController = meteor.GetComponent<MeteorController>();
+                meteorController.Initialize(spawnerPooling.PoolNames[sizeIndex]);
+                meteorController.SetMeteorSize(meteorData.size);
+
+                var rb = meteor.GetComponent<Rigidbody2D>();
+                Vector2 targetDirection = new Vector2(-(Vector2.zero - (Vector2)spawnPosition).normalized.x, 0);
+                rb.velocity = targetDirection * 2f;
+                rb.gravityScale = 0f;
+
+                StartCoroutine(EnableGravity(rb, 2f));
+            }
+        }
+
+        private IEnumerator EnableGravity(Rigidbody2D rb, float delay)
+        {
+            yield return new WaitForSeconds(delay);
+            if (rb != null)
+            {
+                rb.gravityScale = 1f;
+                rb.AddTorque(Random.Range(-20f, 20f));
+            }
+        }
+    }
+}
+
+// 5. MeteorSpawnerSplitting.cs - Quản lý split meteors
+using UnityEngine;
+
+namespace Game.Controllers
+{
+    public class MeteorSpawnerSplitting : MonoBehaviour
+    {
+        private MeteorSpawnerController controller;
+        private MeteorSpawnerPooling spawnerPooling;
+        private readonly float[] directions = { -1f, 1f };
+
+        public void Initialize(MeteorSpawnerController controller)
+        {
+            this.controller = controller;
+            spawnerPooling = GetComponent<MeteorSpawnerPooling>();
+        }
+
+        public void SpawnSplitMeteors(Vector3 position, MeteorSize currentSize)
+        {
+            if (currentSize == MeteorSize.Small) return;
+
+            MeteorSize newSize = currentSize == MeteorSize.Large ? MeteorSize.Medium : MeteorSize.Small;
+
+            for (int i = 0; i < 2; i++)
+            {
+                GameObject split = spawnerPooling.SpawnMeteor((int)newSize, position);
+                if (split != null)
+                {
+                    split.GetComponent<MeteorController>().Initialize(spawnerPooling.PoolNames[(int)newSize]);
+                    split.GetComponent<MeteorController>().SetMeteorSize(newSize);
+                    split.GetComponent<Rigidbody2D>().velocity = new Vector2(directions[i] * 3f, 5f);
+                }
+            }
+        }
+    }
+}
+
+// 6. MeteorSpawnerData.cs - Data classes (nếu chưa có)
+[System.Serializable]
+public class MeteorData
+{
+    public float spawnTime;
+    public Vector3 position;
+    public MeteorSize size;
+}
+
+[System.Serializable]
+public class MeteorSpawnList
+{
+    public MeteorData[] meteors;
+}
