@@ -1,0 +1,443 @@
+// MeteorController.cs
+using Game.Core;
+using Game.Events;
+using Game.Services;
+using UnityEngine;
+
+namespace Game.Controllers
+{
+    public class MeteorController : MonoBehaviour, IPoolable
+    {
+        [SerializeField] private Rigidbody2D rb;
+
+        private MeteorMovement meteorMovement;
+        private MeteorCollision meteorCollision;
+        private MeteorHealth meteorHealth;
+        private MeteorPooling meteorPooling;
+        private MeteorUI meteorUI;
+
+        public Rigidbody2D Rigidbody { get; private set; }
+        public MeteorSize MeteorSize { get; private set; }
+        public string PoolName { get; private set; }
+        public bool IsActive { get; set; }
+
+        private void Awake()
+        {
+            Rigidbody = rb ?? GetComponent<Rigidbody2D>();
+            gameObject.tag = "Meteor";
+            InitializeComponents();
+        }
+
+        private void InitializeComponents()
+        {
+            meteorMovement = GetComponent<MeteorMovement>() ?? gameObject.AddComponent<MeteorMovement>();
+            meteorCollision = GetComponent<MeteorCollision>() ?? gameObject.AddComponent<MeteorCollision>();
+            meteorHealth = GetComponent<MeteorHealth>() ?? gameObject.AddComponent<MeteorHealth>();
+            meteorPooling = GetComponent<MeteorPooling>() ?? gameObject.AddComponent<MeteorPooling>();
+            meteorUI = GetComponent<MeteorUI>() ?? gameObject.AddComponent<MeteorUI>();
+
+            meteorMovement.Initialize(this);
+            meteorCollision.Initialize(this);
+            meteorHealth.Initialize(this);
+            meteorPooling.Initialize(this);
+            meteorUI.Initialize(this);
+        }
+
+        public void Initialize(string poolName)
+        {
+            PoolName = poolName;
+            IsActive = true;
+            meteorHealth.ResetHealth();
+            meteorMovement.ResetMovement();
+            meteorUI.UpdateHealthDisplay();
+        }
+
+        public void SetMeteorSize(MeteorSize size)
+        {
+            MeteorSize = size;
+            meteorHealth.SetHealthBySize(size);
+            meteorUI.UpdateHealthDisplay();
+        }
+
+        public void TakeDamage(int damage) => meteorHealth.TakeDamage(damage);
+        public void DestroyMeteor() => meteorPooling.DestroyMeteor();
+
+        private void Update() => meteorMovement.UpdateRotation();
+
+        public void OnCreate() { }
+        public void OnSpawned() { IsActive = true; Initialize(PoolName); }
+        public void OnDespawned() { IsActive = false; }
+    }
+}
+
+// MeteorMovement.cs
+using UnityEngine;
+
+namespace Game.Controllers
+{
+    public class MeteorMovement : MonoBehaviour
+    {
+        private MeteorController meteorController;
+        private float jumpForce = 12f;
+
+        public void Initialize(MeteorController meteorController)
+        {
+            this.meteorController = meteorController;
+        }
+
+        public void ResetMovement()
+        {
+            meteorController.Rigidbody.mass = 1f;
+            meteorController.Rigidbody.drag = 0.2f;
+        }
+
+        public void UpdateRotation()
+        {
+            meteorController.Rigidbody.angularVelocity = 10f;
+        }
+
+        public void HandleWallCollision()
+        {
+            float posX = transform.position.x;
+            var velocity = meteorController.Rigidbody.velocity;
+            meteorController.Rigidbody.velocity = new Vector2(
+                posX > 0 ? -Mathf.Abs(velocity.x) : Mathf.Abs(velocity.x), 
+                velocity.y);
+        }
+
+        public void HandleGroundBounce()
+        {
+            meteorController.Rigidbody.velocity = new Vector2(meteorController.Rigidbody.velocity.x, jumpForce);
+        }
+
+        public void HandleUpBounce(Transform other)
+        {
+            meteorController.Rigidbody.velocity = Vector2.Reflect(meteorController.Rigidbody.velocity.normalized, other.up);
+        }
+
+        public void HandleShieldReflection(Transform shield)
+        {
+            Vector2 direction = (transform.position - shield.position).normalized;
+            meteorController.Rigidbody.velocity = direction * 10f;
+        }
+    }
+}
+
+// MeteorCollision.cs
+using Game.Core;
+using Game.Events;
+using UnityEngine;
+
+namespace Game.Controllers
+{
+    public class MeteorCollision : MonoBehaviour
+    {
+        private MeteorController meteorController;
+        private MeteorMovement meteorMovement;
+
+        public void Initialize(MeteorController meteorController)
+        {
+            this.meteorController = meteorController;
+            this.meteorMovement = meteorController.GetComponent<MeteorMovement>();
+        }
+
+        private void OnTriggerEnter2D(Collider2D other)
+        {
+            if (!meteorController.IsActive) return;
+
+            switch (other.tag)
+            {
+                case "Missile":
+                    meteorController.TakeDamage(WeaponStats.damage);
+                    break;
+                case "Wall":
+                    meteorMovement.HandleWallCollision();
+                    break;
+                case "Ground":
+                    meteorMovement.HandleGroundBounce();
+                    break;
+                case "UpBounce":
+                    meteorMovement.HandleUpBounce(other.transform);
+                    break;
+                case "Player":
+                    EventManager.Trigger(new PlayerDeathEvent(GameManager.Instance.Lives, DeathCause.MeteorHit));
+                    meteorController.DestroyMeteor();
+                    break;
+                case "Shield":
+                    meteorMovement.HandleShieldReflection(other.transform);
+                    break;
+            }
+        }
+    }
+}
+
+// MeteorHealth.cs
+using Game.Core;
+using Game.Events;
+using UnityEngine;
+
+namespace Game.Controllers
+{
+    public class MeteorHealth : MonoBehaviour
+    {
+        private MeteorController meteorController;
+        private int maxHealth = 10;
+        private int currentHealth;
+
+        public int CurrentHealth => currentHealth;
+
+        public void Initialize(MeteorController meteorController)
+        {
+            this.meteorController = meteorController;
+        }
+
+        public void ResetHealth()
+        {
+            currentHealth = maxHealth;
+        }
+
+        public void SetHealthBySize(MeteorSize size)
+        {
+            maxHealth = size switch
+            {
+                MeteorSize.Large => 10,
+                MeteorSize.Medium => 5,
+                MeteorSize.Small => 2,
+                _ => 10
+            };
+            currentHealth = maxHealth;
+        }
+
+        public void TakeDamage(int damage)
+        {
+            currentHealth -= damage;
+            meteorController.GetComponent<MeteorUI>().UpdateHealthDisplay();
+
+            if (currentHealth <= 0)
+            {
+                int scoreValue = meteorController.MeteorSize switch
+                {
+                    MeteorSize.Large => 100,
+                    MeteorSize.Medium => 50,
+                    MeteorSize.Small => 25,
+                    _ => 0
+                };
+                
+                EventManager.Trigger(new ScoreChangeEvent(ScoreReason.MeteorDestroyed, scoreValue));
+
+                if (meteorController.MeteorSize != MeteorSize.Small)
+                    MeteorSpawner.Instance?.SpawnSplitMeteors(transform.position, meteorController.MeteorSize);
+
+                EventManager.Trigger(new PowerUpSpawnEvent(transform.position, meteorController.MeteorSize));
+                meteorController.DestroyMeteor();
+            }
+        }
+    }
+}
+
+// MeteorPooling.cs
+using Game.Services;
+using UnityEngine;
+
+namespace Game.Controllers
+{
+    public class MeteorPooling : MonoBehaviour
+    {
+        private MeteorController meteorController;
+
+        public void Initialize(MeteorController meteorController)
+        {
+            this.meteorController = meteorController;
+        }
+
+        public void DestroyMeteor()
+        {
+            if (meteorController.IsActive)
+                PoolManager.Instance.Despawn(meteorController.PoolName, gameObject);
+        }
+    }
+}
+
+// MeteorUI.cs
+using TMPro;
+using UnityEngine;
+
+namespace Game.Controllers
+{
+    public class MeteorUI : MonoBehaviour
+    {
+        [SerializeField] private TMP_Text textHealth;
+        private MeteorController meteorController;
+
+        public void Initialize(MeteorController meteorController)
+        {
+            this.meteorController = meteorController;
+            if (textHealth == null)
+                textHealth = GetComponentInChildren<TMP_Text>();
+        }
+
+        public void UpdateHealthDisplay()
+        {
+            if (textHealth != null)
+            {
+                var healthComponent = meteorController.GetComponent<MeteorHealth>();
+                textHealth.text = healthComponent.CurrentHealth.ToString();
+            }
+        }
+    }
+}
+
+// MeteorSpawner.cs (Updated)
+using System.Collections;
+using UnityEngine;
+using Game.Services;
+using Game.Core;
+using Game.Events;
+
+namespace Game.Controllers
+{
+    public class MeteorSpawner : MonoBehaviour
+    {
+        [SerializeField] private GameObject[] meteorPrefabs;
+        private TextAsset meteorsJson;
+        private readonly string[] poolNames = { "LargeMeteor_Pool", "MediumMeteor_Pool", "SmallMeteor_Pool" };
+        private readonly float[] directions = { -1f, 1f };
+        private MeteorSpawnList meteors;
+
+        public static MeteorSpawner Instance { get; private set; }
+
+        void Awake()
+        {
+            Instance = this;
+            EventManager.Subscribe<LevelStartEvent>(OnLevelStart);
+        }
+
+        void Start()
+        {
+            for (int i = 0; i < meteorPrefabs.Length; i++)
+                PoolManager.Instance.CreatePool(poolNames[i], meteorPrefabs[i], 10, 30, true);
+        }
+
+        private void OnLevelStart(LevelStartEvent ev)
+        {
+            meteorsJson = ev.LevelData;
+            if (meteorsJson != null)
+            {
+                meteors = JsonUtility.FromJson<MeteorSpawnList>(meteorsJson.text);
+                StartCoroutine(SpawnMeteorsFromJson());
+            }
+        }
+
+        IEnumerator SpawnMeteorsFromJson()
+        {
+            if (meteors == null) yield break;
+            
+            float startTime = Time.time;
+            int currentIndex = 0;
+            
+            while (currentIndex < meteors.meteors.Length)
+            {
+                if (Time.time > startTime + meteors.meteors[currentIndex].spawnTime)
+                {
+                    SpawnMeteorFromData(meteors.meteors[currentIndex]);
+                    currentIndex++;
+                }
+                yield return null;
+            }
+
+            EventManager.Trigger(new AllMeteorsDestroyedEvent(LevelManager.Instance.CurrentLevel));
+        }
+
+        void SpawnMeteorFromData(MeteorData meteorData)
+        {
+            float direction = directions[Random.Range(0, 2)];
+            GameObject meteor = PoolManager.Instance.Spawn(poolNames[(int)meteorData.size], meteorData.position);
+
+            if (meteor != null)
+            {
+                var controller = meteor.GetComponent<MeteorController>();
+                controller.Initialize(poolNames[(int)meteorData.size]);
+                controller.SetMeteorSize(meteorData.size);
+
+                var rb = meteor.GetComponent<Rigidbody2D>();
+                rb.velocity = new Vector2(-direction * 2f, 0f);
+                rb.gravityScale = 0f;
+                StartCoroutine(EnableGravity(rb, 2f));
+            }
+        }
+
+        public void SpawnMeteor(MeteorSize size)
+        {
+            float direction = directions[Random.Range(0, 2)];
+            Vector3 spawnPos = new Vector3(GameManager.Instance.ScreenWidth * 1.3f * direction, 3f, 0f);
+            GameObject meteor = PoolManager.Instance.Spawn(poolNames[(int)size], spawnPos);
+
+            if (meteor != null)
+            {
+                var controller = meteor.GetComponent<MeteorController>();
+                controller.Initialize(poolNames[(int)size]);
+                controller.SetMeteorSize(size);
+
+                var rb = meteor.GetComponent<Rigidbody2D>();
+                rb.velocity = new Vector2(-direction * 2f, 0f);
+                rb.gravityScale = 0f;
+                StartCoroutine(EnableGravity(rb, 2f));
+            }
+        }
+
+        public void SpawnSplitMeteors(Vector3 position, MeteorSize currentSize)
+        {
+            if (currentSize == MeteorSize.Small) return;
+
+            MeteorSize newSize = currentSize == MeteorSize.Large ? MeteorSize.Medium : MeteorSize.Small;
+
+            for (int i = 0; i < 2; i++)
+            {
+                GameObject split = PoolManager.Instance.Spawn(poolNames[(int)newSize], position);
+                if (split != null)
+                {
+                    var controller = split.GetComponent<MeteorController>();
+                    controller.Initialize(poolNames[(int)newSize]);
+                    controller.SetMeteorSize(newSize);
+                    split.GetComponent<Rigidbody2D>().velocity = new Vector2(directions[i] * 3f, 5f);
+                }
+            }
+        }
+
+        IEnumerator EnableGravity(Rigidbody2D rb, float delay)
+        {
+            yield return new WaitForSeconds(delay);
+            if (rb != null)
+            {
+                rb.gravityScale = 1f;
+                rb.AddTorque(Random.Range(-20f, 20f));
+            }
+        }
+
+        private void OnDestroy()
+        {
+            EventManager.Unsubscribe<LevelStartEvent>(OnLevelStart);
+        }
+    }
+
+    [System.Serializable]
+    public class MeteorData
+    {
+        public float spawnTime;
+        public Vector3 position;
+        public MeteorSize size;
+    }
+
+    [System.Serializable]
+    public class MeteorSpawnList
+    {
+        public MeteorData[] meteors;
+    }
+}
+
+public enum MeteorSize
+{
+    Large,
+    Medium,
+    Small
+}
