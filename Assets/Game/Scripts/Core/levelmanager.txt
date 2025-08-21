@@ -1,0 +1,163 @@
+// 1. Sửa PowerUpData.cs
+using UnityEngine;
+using Game.Events;
+
+namespace Game.Scriptable
+{
+    [CreateAssetMenu(fileName = "PowerUpData", menuName = "Game/PowerUp")]
+    public class PowerUpData : ScriptableObject
+    {
+        public PowerUpType powerUpType;
+        public float baseDuration = 20f;
+        public float baseMultiplier = 2f;
+        
+        [Header("Upgrade Settings")]
+        public float durationPerLevel = 2f;     // Thêm 2s mỗi level
+        public float multiplierPerLevel = 0.5f; // Thêm 0.5x mỗi level
+        public int maxLevel = 5;
+
+        public float GetDuration(int level)
+        {
+            return baseDuration + (durationPerLevel * level);
+        }
+
+        public float GetMultiplier(int level)
+        {
+            return baseMultiplier + (multiplierPerLevel * level);
+        }
+    }
+}
+
+// 2. Tạo UpgradeManager.cs
+using UnityEngine;
+using System.Collections.Generic;
+
+namespace Game.Core
+{
+    public class UpgradeManager : MonoBehaviour
+    {
+        public static UpgradeManager Instance { get; private set; }
+        
+        private Dictionary<PowerUpType, int> powerUpLevels = new Dictionary<PowerUpType, int>();
+        
+        private void Awake()
+        {
+            if (Instance == null)
+            {
+                Instance = this;
+                DontDestroyOnLoad(gameObject);
+                InitializeLevels();
+            }
+            else
+            {
+                Destroy(gameObject);
+            }
+        }
+
+        private void InitializeLevels()
+        {
+            foreach (PowerUpType type in System.Enum.GetValues(typeof(PowerUpType)))
+            {
+                powerUpLevels[type] = 0; // Start at level 0
+            }
+        }
+
+        public int GetLevel(PowerUpType type)
+        {
+            return powerUpLevels.ContainsKey(type) ? powerUpLevels[type] : 0;
+        }
+
+        public void UpgradeLevel(PowerUpType type)
+        {
+            if (powerUpLevels.ContainsKey(type))
+            {
+                powerUpLevels[type]++;
+            }
+        }
+
+        public void SetLevel(PowerUpType type, int level)
+        {
+            powerUpLevels[type] = level;
+        }
+    }
+}
+
+// 3. Sửa PowerUpEffect.cs base class
+using UnityEngine;
+using Game.Scriptable;
+using Game.Core;
+
+namespace Game.PowerUp
+{
+    public abstract class PowerUpEffect : MonoBehaviour
+    {
+        [SerializeField] protected PowerUpData powerUpData;
+        protected int currentLevel;
+        protected float duration;
+        protected float effectMultiplier;
+
+        private void Start()
+        {
+            currentLevel = UpgradeManager.Instance.GetLevel(powerUpData.powerUpType);
+            duration = powerUpData.GetDuration(currentLevel);
+            effectMultiplier = powerUpData.GetMultiplier(currentLevel);
+            
+            OnActivate();
+            Invoke(nameof(DeactivateEffect), duration);
+        }
+
+        protected abstract void OnActivate();
+        protected abstract void OnDeactivate();
+
+        private void DeactivateEffect()
+        {
+            OnDeactivate();
+            Destroy(this);
+        }
+    }
+}
+
+// 4. Sửa RapidFire.cs làm ví dụ
+using Game.Controllers;
+using UnityEngine;
+
+namespace Game.PowerUp
+{
+    public class RapidFire : PowerUpEffect
+    {
+        private float originalFireRate;
+        private WeaponStats weaponStats;
+
+        protected override void OnActivate()
+        {
+            weaponStats = GetComponent<WeaponStats>();
+            originalFireRate = weaponStats.FireRate;
+            
+            // Sử dụng effectMultiplier từ level thay vì fix cứng
+            weaponStats.FireRate = originalFireRate / effectMultiplier;
+            
+            Debug.Log($"RapidFire Level {currentLevel}: {effectMultiplier}x speed for {duration}s");
+        }
+
+        protected override void OnDeactivate()
+        {
+            if (weaponStats != null)
+                weaponStats.FireRate = originalFireRate;
+        }
+    }
+}
+
+// 5. Cách sử dụng
+public class ExampleUsage : MonoBehaviour
+{
+    void Start()
+    {
+        // Upgrade RapidFire lên level 2
+        UpgradeManager.Instance.UpgradeLevel(PowerUpType.RapidFire);
+        UpgradeManager.Instance.UpgradeLevel(PowerUpType.RapidFire);
+        
+        // Kiểm tra level hiện tại
+        int currentLevel = UpgradeManager.Instance.GetLevel(PowerUpType.RapidFire);
+        Debug.Log($"RapidFire Level: {currentLevel}");
+    }
+}
