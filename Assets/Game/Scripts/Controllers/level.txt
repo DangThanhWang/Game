@@ -1,0 +1,257 @@
+// 1. PowerUpLevelData - ScriptableObject cho config level
+using UnityEngine;
+
+[CreateAssetMenu(fileName = "PowerUpLevelData", menuName = "Game/PowerUpLevel")]
+public class PowerUpLevelData : ScriptableObject
+{
+    [Header("Level Configuration")]
+    public PowerUpType powerUpType;
+    public PowerUpLevelStats[] levels;
+}
+
+[System.Serializable]
+public class PowerUpLevelStats
+{
+    public int level;
+    public float duration;
+    public float multiplier;
+    public int cost;
+    public string description;
+}
+
+// 2. PowerUpManager - Wrapper API quản lý tất cả
+using System.Collections.Generic;
+using UnityEngine;
+
+public class PowerUpManager : MonoBehaviour
+{
+    public static PowerUpManager Instance;
+    
+    [SerializeField] private PowerUpLevelData[] powerUpLevelConfigs;
+    private Dictionary<PowerUpType, PowerUpLevelData> configMap;
+    private Dictionary<PowerUpType, int> playerLevels; // Level hiện tại của player
+    
+    private void Awake()
+    {
+        if (Instance == null)
+        {
+            Instance = this;
+            DontDestroyOnLoad(gameObject);
+            InitializeSystem();
+        }
+        else
+        {
+            Destroy(gameObject);
+        }
+    }
+    
+    private void InitializeSystem()
+    {
+        configMap = new Dictionary<PowerUpType, PowerUpLevelData>();
+        playerLevels = new Dictionary<PowerUpType, int>();
+        
+        foreach (var config in powerUpLevelConfigs)
+        {
+            configMap[config.powerUpType] = config;
+            playerLevels[config.powerUpType] = 1; // Level mặc định
+        }
+        
+        LoadPlayerData(); // Load từ save game
+    }
+    
+    // API chính cho upgrade
+    public bool UpgradePowerUp(PowerUpType type)
+    {
+        if (!CanUpgrade(type)) return false;
+        
+        int currentLevel = GetCurrentLevel(type);
+        int cost = GetUpgradeCost(type, currentLevel);
+        
+        if (SpendCurrency(cost))
+        {
+            playerLevels[type] = currentLevel + 1;
+            SavePlayerData();
+            return true;
+        }
+        return false;
+    }
+    
+    // API lấy stats theo level hiện tại
+    public PowerUpLevelStats GetCurrentStats(PowerUpType type)
+    {
+        if (!configMap.ContainsKey(type)) return null;
+        
+        int level = GetCurrentLevel(type);
+        var config = configMap[type];
+        
+        return level <= config.levels.Length ? 
+            config.levels[level - 1] : 
+            config.levels[config.levels.Length - 1];
+    }
+    
+    public int GetCurrentLevel(PowerUpType type)
+    {
+        return playerLevels.ContainsKey(type) ? playerLevels[type] : 1;
+    }
+    
+    public bool CanUpgrade(PowerUpType type)
+    {
+        if (!configMap.ContainsKey(type)) return false;
+        
+        int currentLevel = GetCurrentLevel(type);
+        return currentLevel < configMap[type].levels.Length;
+    }
+    
+    public int GetUpgradeCost(PowerUpType type, int fromLevel)
+    {
+        if (!configMap.ContainsKey(type) || fromLevel >= configMap[type].levels.Length) 
+            return -1;
+            
+        return configMap[type].levels[fromLevel].cost;
+    }
+    
+    // API cho UI
+    public PowerUpLevelData GetPowerUpConfig(PowerUpType type)
+    {
+        return configMap.ContainsKey(type) ? configMap[type] : null;
+    }
+    
+    private bool SpendCurrency(int amount)
+    {
+        // Implement currency system
+        return true; // Simplified
+    }
+    
+    private void LoadPlayerData()
+    {
+        // Load từ PlayerPrefs hoặc save system
+    }
+    
+    private void SavePlayerData()
+    {
+        // Save player levels
+    }
+}
+
+// 3. PowerUpEffect nâng cấp - sử dụng PowerUpManager
+namespace Game.PowerUp
+{
+    public abstract class PowerUpEffect : MonoBehaviour
+    {
+        [SerializeField] protected PowerUpType powerUpType;
+        protected PowerUpLevelStats currentStats;
+        protected float timer;
+
+        protected virtual void Start()
+        {
+            // Lấy stats từ PowerUpManager thay vì hardcode
+            currentStats = PowerUpManager.Instance.GetCurrentStats(powerUpType);
+            timer = currentStats.duration;
+            OnActivate();
+        }
+
+        protected virtual void Update()
+        {
+            timer -= Time.deltaTime;
+            OnUpdate();
+            if(timer <= 0)
+            {
+                OnDeactivate();
+                Destroy(this);
+            }
+        }
+
+        protected abstract void OnActivate();
+        protected virtual void OnUpdate() { }
+        protected abstract void OnDeactivate();
+        
+        // Helper method cho subclass
+        protected float GetMultiplier() => currentStats.multiplier;
+        protected float GetDuration() => currentStats.duration;
+    }
+}
+
+// 4. Ví dụ RapidFire sử dụng system mới
+namespace Game.PowerUp
+{
+    public class RapidFire : PowerUpEffect
+    {
+        private float originalFireRate;
+        private WeaponStats weaponStats;
+
+        protected override void OnActivate()
+        {
+            weaponStats = GetComponent<WeaponStats>();
+            originalFireRate = weaponStats.FireRate;
+            
+            // Sử dụng multiplier từ level hiện tại
+            float fireRateMultiplier = GetMultiplier();
+            weaponStats.FireRate = originalFireRate / fireRateMultiplier;
+        }
+
+        protected override void OnDeactivate()
+        {
+            weaponStats.FireRate = originalFireRate;
+        }
+    }
+}
+
+// 5. UI Controller cho upgrade shop
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+
+public class PowerUpUpgradeUI : MonoBehaviour
+{
+    [Header("UI Elements")]
+    public Button upgradeButton;
+    public TextMeshProUGUI levelText;
+    public TextMeshProUGUI costText;
+    public TextMeshProUGUI descriptionText;
+    public Slider progressBar;
+    
+    [Header("Configuration")]
+    public PowerUpType targetPowerUp;
+    
+    private void Start()
+    {
+        upgradeButton.onClick.AddListener(OnUpgradeClick);
+        UpdateUI();
+    }
+    
+    private void UpdateUI()
+    {
+        var manager = PowerUpManager.Instance;
+        int currentLevel = manager.GetCurrentLevel(targetPowerUp);
+        var currentStats = manager.GetCurrentStats(targetPowerUp);
+        bool canUpgrade = manager.CanUpgrade(targetPowerUp);
+        
+        levelText.text = $"Level {currentLevel}";
+        descriptionText.text = currentStats.description;
+        
+        if (canUpgrade)
+        {
+            int cost = manager.GetUpgradeCost(targetPowerUp, currentLevel);
+            costText.text = $"${cost}";
+            upgradeButton.interactable = true;
+        }
+        else
+        {
+            costText.text = "MAX";
+            upgradeButton.interactable = false;
+        }
+        
+        // Update progress bar
+        var config = manager.GetPowerUpConfig(targetPowerUp);
+        progressBar.value = (float)currentLevel / config.levels.Length;
+    }
+    
+    private void OnUpgradeClick()
+    {
+        if (PowerUpManager.Instance.UpgradePowerUp(targetPowerUp))
+        {
+            UpdateUI();
+            // Show upgrade effect, play sound, etc.
+        }
+    }
+}
